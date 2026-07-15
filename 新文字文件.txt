@@ -1,0 +1,305 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity PingPong is
+    port (
+        i_clk         : in  std_logic; 
+        i_rst         : in  std_logic; 
+        i_p1_btn_up   : in  std_logic; 
+        i_p1_btn_down : in  std_logic; 
+        i_p2_btn_up   : in  std_logic; 
+        i_p2_btn_down : in  std_logic; 
+        o_hsync       : out std_logic; 
+        o_vsync       : out std_logic; 
+        o_red         : out std_logic_vector(3 downto 0);
+        o_green       : out std_logic_vector(3 downto 0);
+        o_blue        : out std_logic_vector(3 downto 0)
+    );
+end entity PingPong;
+
+architecture RTL of PingPong is
+
+    -- 系統常數
+    constant CLK_FREQ   : integer := 50000000; 
+    constant PIXEL_FREQ : integer := 40000000;
+    
+    constant H_DISPLAY : integer := 800;
+    constant H_TOTAL   : integer := 1056;
+    constant V_DISPLAY : integer := 600;
+    constant V_TOTAL   : integer := 628;
+    constant BALL_SPEED : integer := 4;
+
+    -- 內部訊號宣告
+    signal acc      : integer range 0 to CLK_FREQ + PIXEL_FREQ;
+    signal pixel_en : std_logic;
+
+    signal h_cnt      : integer range 0 to H_TOTAL - 1;
+    signal v_cnt      : integer range 0 to V_TOTAL - 1;
+    signal pixel_x    : integer range 0 to H_TOTAL - 1;
+    signal pixel_y    : integer range 0 to V_TOTAL - 1;
+    signal vsync_tick : std_logic;
+
+    type t_game_state is (S_SERVE, S_PLAY);
+    signal game_state : t_game_state;
+    
+    type t_ball_dir is (UP_LEFT, DOWN_LEFT, UP_RIGHT, DOWN_RIGHT);
+    signal ball_dir : t_ball_dir;
+    signal random_cnt : integer range 0 to 3;
+
+    signal ball_x         : integer range -50 to 850 := 30;
+    signal ball_y         : integer range -50 to 650 := 300;
+    signal paddle_left_y  : integer range 0 to 600 := 270;
+    signal paddle_right_y : integer range 0 to 600 := 270;
+
+    signal is_ball         : std_logic;
+    signal is_paddle_left  : std_logic;
+    signal is_paddle_right : std_logic;
+
+begin
+
+    -- ==========================================
+    -- 1. 除頻器 (Phase Accumulator)
+    -- ==========================================
+    p_acc : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then 
+            acc <= 0;
+        elsif rising_edge(i_clk) then
+            if acc + PIXEL_FREQ >= CLK_FREQ then 
+                acc <= acc + PIXEL_FREQ - CLK_FREQ;
+            else 
+                acc <= acc + PIXEL_FREQ; 
+            end if;
+        end if;
+    end process p_acc;
+
+    p_pixel_en : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then 
+            pixel_en <= '0';
+        elsif rising_edge(i_clk) then
+            if acc + PIXEL_FREQ >= CLK_FREQ then 
+                pixel_en <= '1';
+            else 
+                pixel_en <= '0'; 
+            end if;
+        end if;
+    end process p_pixel_en;
+
+    -- ==========================================
+    -- 2. VGA 控制器 (巢狀寫法解決模擬器卡死)
+    -- ==========================================
+    p_h_cnt : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then 
+            h_cnt <= 0;
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if h_cnt = H_TOTAL - 1 then 
+                    h_cnt <= 0; 
+                else 
+                    h_cnt <= h_cnt + 1; 
+                end if;
+            end if;
+        end if;
+    end process p_h_cnt;
+
+    p_v_cnt : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then 
+            v_cnt <= 0;
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if h_cnt = H_TOTAL - 1 then
+                    if v_cnt = V_TOTAL - 1 then 
+                        v_cnt <= 0; 
+                    else 
+                        v_cnt <= v_cnt + 1; 
+                    end if;
+                end if;
+            end if;
+        end if;
+    end process p_v_cnt;
+
+    o_hsync <= '1' when (h_cnt >= 840 and h_cnt < 968) else '0';
+    o_vsync <= '1' when (v_cnt >= 601 and v_cnt < 605) else '0';
+    pixel_x <= h_cnt when (h_cnt < H_DISPLAY) else 0;
+    pixel_y <= v_cnt when (v_cnt < V_DISPLAY) else 0;
+    vsync_tick <= '1' when (v_cnt = V_DISPLAY and h_cnt = 0) else '0';
+
+    -- ==========================================
+    -- 3. 隨機發球方向產生器
+    -- ==========================================
+    p_random_cnt : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then 
+            random_cnt <= 0;
+        elsif rising_edge(i_clk) then
+            if random_cnt = 3 then 
+                random_cnt <= 0; 
+            else 
+                random_cnt <= random_cnt + 1; 
+            end if;
+        end if;
+    end process p_random_cnt;
+
+    -- ==========================================
+    -- 4. 遊戲狀態機
+    -- ==========================================
+    p_game_state : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then 
+            game_state <= S_SERVE;
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                case game_state is
+                    when S_SERVE =>
+                        if i_p1_btn_up = '1' or i_p1_btn_down = '1' or 
+                           i_p2_btn_up = '1' or i_p2_btn_down = '1' then
+                            game_state <= S_PLAY;
+                        end if;
+                    when S_PLAY =>
+                        if ball_x <= 0 or (ball_x + 8) >= 800 then 
+                            game_state <= S_SERVE; 
+                        end if;
+                end case;
+            end if;
+        end if;
+    end process p_game_state;
+
+    -- ==========================================
+    -- 5. 球的方向狀態機
+    -- ==========================================
+    p_ball_dir : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            ball_dir <= DOWN_RIGHT; 
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if game_state = S_SERVE then
+                    case random_cnt is
+                        when 0 => ball_dir <= UP_LEFT;
+                        when 1 => ball_dir <= DOWN_LEFT;
+                        when 2 => ball_dir <= UP_RIGHT;
+                        when 3 => ball_dir <= DOWN_RIGHT;
+                    end case;
+                elsif game_state = S_PLAY and vsync_tick = '1' then
+                    case ball_dir is
+                        when UP_LEFT =>
+                            if ball_y <= 0 then ball_dir <= DOWN_LEFT;
+                            elsif ball_x <= 20 and (ball_y + 8 >= paddle_left_y) and (ball_y <= paddle_left_y + 60) then ball_dir <= UP_RIGHT;
+                            end if;
+                        when DOWN_LEFT =>
+                            if (ball_y + 8) >= 600 then ball_dir <= UP_LEFT;
+                            elsif ball_x <= 20 and (ball_y + 8 >= paddle_left_y) and (ball_y <= paddle_left_y + 60) then ball_dir <= DOWN_RIGHT;
+                            end if;
+                        when UP_RIGHT =>
+                            if ball_y <= 0 then ball_dir <= DOWN_RIGHT;
+                            elsif (ball_x + 8) >= 770 and (ball_y + 8 >= paddle_right_y) and (ball_y <= paddle_right_y + 60) then ball_dir <= UP_LEFT;
+                            end if;
+                        when DOWN_RIGHT =>
+                            if (ball_y + 8) >= 600 then ball_dir <= UP_RIGHT;
+                            elsif (ball_x + 8) >= 770 and (ball_y + 8 >= paddle_right_y) and (ball_y <= paddle_right_y + 60) then ball_dir <= DOWN_LEFT;
+                            end if;
+                    end case;
+                end if;
+            end if;
+        end if;
+    end process p_ball_dir;
+
+    -- ==========================================
+    -- 6. 物件座標更新
+    -- ==========================================
+    p_ball_x : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            ball_x <= 30; 
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if game_state = S_SERVE then
+                    ball_x <= 30; 
+                elsif game_state = S_PLAY and vsync_tick = '1' then
+                    if ball_dir = UP_LEFT or ball_dir = DOWN_LEFT then
+                        ball_x <= ball_x - BALL_SPEED;
+                    else
+                        ball_x <= ball_x + BALL_SPEED;
+                    end if;
+                end if;
+            end if;
+        end if;
+    end process p_ball_x;
+
+    p_ball_y : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            ball_y <= 300; 
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if game_state = S_SERVE then
+                    ball_y <= 300; 
+                elsif game_state = S_PLAY and vsync_tick = '1' then
+                    if ball_dir = UP_LEFT or ball_dir = UP_RIGHT then
+                        ball_y <= ball_y - BALL_SPEED;
+                    else
+                        ball_y <= ball_y + BALL_SPEED;
+                    end if;
+                end if;
+            end if;
+        end if;
+    end process p_ball_y;
+
+    p_paddle_left_y : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            paddle_left_y <= 270; 
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if vsync_tick = '1' then 
+                    if i_p1_btn_up = '1' and paddle_left_y > 10 then
+                        paddle_left_y <= paddle_left_y - 6;
+                    elsif i_p1_btn_down = '1' and paddle_left_y < 530 then
+                        paddle_left_y <= paddle_left_y + 6;
+                    end if;
+                end if;
+            end if;
+        end if;
+    end process p_paddle_left_y;
+
+    p_paddle_right_y : process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            paddle_right_y <= 270; 
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if vsync_tick = '1' then 
+                    if i_p2_btn_up = '1' and paddle_right_y > 10 then
+                        paddle_right_y <= paddle_right_y - 6;
+                    elsif i_p2_btn_down = '1' and paddle_right_y < 530 then
+                        paddle_right_y <= paddle_right_y + 6;
+                    end if;
+                end if;
+            end if;
+        end if;
+    end process p_paddle_right_y;
+
+    -- ==========================================
+    -- 7. 像素生成器 (組合邏輯)
+    -- ==========================================
+    is_ball <= '1' when (pixel_x >= ball_x and pixel_x < ball_x + 8) and
+                        (pixel_y >= ball_y and pixel_y < ball_y + 8) else '0';
+
+    is_paddle_left <= '1' when (pixel_x >= 10 and pixel_x < 20) and
+                               (pixel_y >= paddle_left_y and pixel_y < paddle_left_y + 60) else '0';
+
+    is_paddle_right <= '1' when (pixel_x >= 770 and pixel_x < 780) and
+                                (pixel_y >= paddle_right_y and pixel_y < paddle_right_y + 60) else '0';
+
+    o_red <= "1111" when (is_ball = '1' and pixel_x < H_DISPLAY and pixel_y < V_DISPLAY) else "0000";
+    
+    o_green <= "1111" when ((is_paddle_left = '1' or is_paddle_right = '1') and 
+                            pixel_x < H_DISPLAY and pixel_y < V_DISPLAY) else "0000";
+                            
+    o_blue <= "0000";
+
+end architecture RTL;
