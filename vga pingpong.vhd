@@ -30,7 +30,7 @@ end pong_vga;
 architecture Behavioral of pong_vga is
 
     ------------------------------------------------------------------
-    -- VGA 800x600 @ 60Hz 時序參數
+    -- VGA 800x600 @ 60Hz 時序參數 (與原始程式相同)
     ------------------------------------------------------------------
     constant h_display : integer := 800;
     constant h_fp      : integer := 40;
@@ -74,6 +74,7 @@ architecture Behavioral of pong_vga is
     ------------------------------------------------------------------
     constant ball_size  : integer := 15;
     constant ball_speed : integer := 4;
+
     signal ball_x  : integer range 0 to h_display := h_display/2 - ball_size/2;
     signal ball_y  : integer range 0 to v_display := v_display/2 - ball_size/2;
     signal ball_dx : integer := ball_speed;   -- 水平速度 (可正可負)
@@ -85,7 +86,20 @@ architecture Behavioral of pong_vga is
     signal score_left  : integer range 0 to 9 := 0;
     signal score_right : integer range 0 to 9 := 0;
 
+    -- 遊戲是否已結束 ('1' = 已經有一方拿到9分，畫面凍結顯示獲勝方，
+    -- 需要 i_rst 重置才能重新開始一局)
     signal game_over   : STD_LOGIC := '0';
+
+    ------------------------------------------------------------------
+    -- 球的狀態機 (FSM)
+    --   S_PLAY        : 正常比賽中，球依照速度移動、偵測撞板/撞牆
+    --   S_SCORE_LEFT  : 球飛出右邊界，左邊玩家得分 (一個 frame_tick 的過渡狀態)
+    --   S_SCORE_RIGHT : 球飛出左邊界，右邊玩家得分 (一個 frame_tick 的過渡狀態)
+    --   S_GAME_OVER   : 已經有一方拿到9分，凍結，需要 i_rst 才能離開
+    ------------------------------------------------------------------
+    type ball_state_t is (S_PLAY, S_SCORE_LEFT, S_SCORE_RIGHT, S_GAME_OVER);
+    signal ball_state : ball_state_t := S_PLAY;
+
     ------------------------------------------------------------------
     -- 每個畫面 (frame) 結束時產生一次脈波，遊戲邏輯以此更新
     ------------------------------------------------------------------
@@ -191,7 +205,7 @@ begin
     ------------------------------------------------------------------
     -- Process 5：frame_tick - 每個畫面最後一個像素產生一次脈波
     -- 遊戲邏輯 (板子移動、球的運動) 都在這個脈波觸發時更新一次，
-    -- 也就是每秒更新約 60 次
+    -- 也就是每秒更新約 60 次，速度感覺自然。
     ------------------------------------------------------------------
     process(i_clk, i_rst)
     begin
@@ -259,7 +273,7 @@ begin
     end process;
 
     ------------------------------------------------------------------
-    -- Process 8：球的運動、碰撞偵測與得分判斷 (以 FSM 狀態機呈現)
+    -- Process 8：球的運動、碰撞偵測與得分判斷
     ------------------------------------------------------------------
     process(i_clk, i_rst)
         variable next_x : integer;
@@ -377,7 +391,6 @@ begin
             end if;
         end if;
     end process;
-
 
     ------------------------------------------------------------------
     -- Process 9：分數輸出
