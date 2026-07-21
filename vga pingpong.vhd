@@ -259,7 +259,7 @@ begin
     end process;
 
     ------------------------------------------------------------------
-    -- Process 8：球的運動、碰撞偵測與得分判斷
+    -- Process 8：球的運動、碰撞偵測與得分判斷 (以 FSM 狀態機呈現)
     ------------------------------------------------------------------
     process(i_clk, i_rst)
         variable next_x : integer;
@@ -273,76 +273,111 @@ begin
             score_left  <= 0;
             score_right <= 0;
             game_over   <= '0';
+            ball_state  <= S_PLAY;
         elsif rising_edge(i_clk) then
-            -- 遊戲已結束時，球與分數都凍結，直到 i_rst 重新開始
-            if (frame_tick = '1') and (game_over = '0') then
-                next_x := ball_x + ball_dx;
-                next_y := ball_y + ball_dy;
+            if frame_tick = '1' then
 
-                ----------------------------------------------------------
-                -- 上下邊界反彈
-                ----------------------------------------------------------
-                if next_y <= 0 then
-                    ball_y  <= 0;
-                    ball_dy <= -ball_dy;
-                elsif next_y >= v_display - ball_size then
-                    ball_y  <= v_display - ball_size;
-                    ball_dy <= -ball_dy;
-                else
-                    ball_y <= next_y;
-                end if;
+                case ball_state is
 
-                ----------------------------------------------------------
-                -- 左右邊界：撞板反彈 或 對方得分
-                ----------------------------------------------------------
-                if (ball_dx < 0) and (next_x <= left_paddle_x + paddle_width) and
-                   (next_x >= left_paddle_x) and
-                   (ball_y + ball_size >= paddle_left_y) and
-                   (ball_y <= paddle_left_y + paddle_height) then
-                    -- 撞到左邊板子，反彈往右
-                    ball_x  <= left_paddle_x + paddle_width;
-                    ball_dx <= ball_speed;
+                    ------------------------------------------------------
+                    -- S_PLAY：正常比賽，球依速度移動、偵測撞板/撞牆
+                    ------------------------------------------------------
+                    when S_PLAY =>
+                        next_x := ball_x + ball_dx;
+                        next_y := ball_y + ball_dy;
 
-                elsif next_x <= 0 then
-                    -- 沒接到，右邊玩家得分，球重置到中央
-                    if score_right < 9 then
-                        score_right <= score_right + 1;
-                        if score_right + 1 = 9 then
-                            -- 右邊拿到第9分，遊戲結束
-                            game_over <= '1';
+                        -- 上下邊界反彈
+                        if next_y <= 0 then
+                            ball_y  <= 0;
+                            ball_dy <= -ball_dy;
+                        elsif next_y >= v_display - ball_size then
+                            ball_y  <= v_display - ball_size;
+                            ball_dy <= -ball_dy;
+                        else
+                            ball_y <= next_y;
                         end if;
-                    end if;
-                    ball_x  <= h_display/2 - ball_size/2;
-                    ball_y  <= v_display/2 - ball_size/2;
-                    ball_dx <= ball_speed;
 
-                elsif (ball_dx > 0) and (next_x + ball_size >= right_paddle_x) and
-                      (next_x + ball_size <= right_paddle_x + paddle_width) and
-                      (ball_y + ball_size >= paddle_right_y) and
-                      (ball_y <= paddle_right_y + paddle_height) then
-                    -- 撞到右邊板子，反彈往左
-                    ball_x  <= right_paddle_x - ball_size;
-                    ball_dx <= -ball_speed;
+                        -- 左右邊界：撞板反彈、或進入得分狀態
+                        if (ball_dx < 0) and (next_x <= left_paddle_x + paddle_width) and
+                           (next_x >= left_paddle_x) and
+                           (ball_y + ball_size >= paddle_left_y) and
+                           (ball_y <= paddle_left_y + paddle_height) then
+                            -- 撞到左邊板子，反彈往右，留在 S_PLAY
+                            ball_x  <= left_paddle_x + paddle_width;
+                            ball_dx <= ball_speed;
 
-                elsif next_x >= h_display - ball_size then
-                    -- 沒接到，左邊玩家得分，球重置到中央
-                    if score_left < 9 then
-                        score_left <= score_left + 1;
-                        if score_left + 1 = 9 then
+                        elsif next_x <= 0 then
+                            -- 沒接到，右邊玩家得分 -> 進入 S_SCORE_RIGHT
+                            ball_state <= S_SCORE_RIGHT;
+
+                        elsif (ball_dx > 0) and (next_x + ball_size >= right_paddle_x) and
+                              (next_x + ball_size <= right_paddle_x + paddle_width) and
+                              (ball_y + ball_size >= paddle_right_y) and
+                              (ball_y <= paddle_right_y + paddle_height) then
+                            -- 撞到右邊板子，反彈往左，留在 S_PLAY
+                            ball_x  <= right_paddle_x - ball_size;
+                            ball_dx <= -ball_speed;
+
+                        elsif next_x >= h_display - ball_size then
+                            -- 沒接到，左邊玩家得分 -> 進入 S_SCORE_LEFT
+                            ball_state <= S_SCORE_LEFT;
+
+                        else
+                            ball_x <= next_x;
+                        end if;
+
+                    ------------------------------------------------------
+                    -- S_SCORE_LEFT：左邊玩家得分，球飛出右邊界
+                    ------------------------------------------------------
+                    when S_SCORE_LEFT =>
+                        if score_left < 9 then
+                            score_left <= score_left + 1;
+                        end if;
+
+                        if score_left + 1 >= 9 then
                             -- 左邊拿到第9分，遊戲結束
-                            game_over <= '1';
+                            game_over  <= '1';
+                            ball_state <= S_GAME_OVER;
+                        else
+                            -- 球重置到中央，交給右邊發球，回到 S_PLAY
+                            ball_x     <= h_display/2 - ball_size/2;
+                            ball_y     <= v_display/2 - ball_size/2;
+                            ball_dx    <= -ball_speed;
+                            ball_state <= S_PLAY;
                         end if;
-                    end if;
-                    ball_x  <= h_display/2 - ball_size/2;
-                    ball_y  <= v_display/2 - ball_size/2;
-                    ball_dx <= -ball_speed;
 
-                else
-                    ball_x <= next_x;
-                end if;
+                    ------------------------------------------------------
+                    -- S_SCORE_RIGHT：右邊玩家得分，球飛出左邊界
+                    ------------------------------------------------------
+                    when S_SCORE_RIGHT =>
+                        if score_right < 9 then
+                            score_right <= score_right + 1;
+                        end if;
+
+                        if score_right + 1 >= 9 then
+                            -- 右邊拿到第9分，遊戲結束
+                            game_over  <= '1';
+                            ball_state <= S_GAME_OVER;
+                        else
+                            -- 球重置到中央，交給左邊發球，回到 S_PLAY
+                            ball_x     <= h_display/2 - ball_size/2;
+                            ball_y     <= v_display/2 - ball_size/2;
+                            ball_dx    <= ball_speed;
+                            ball_state <= S_PLAY;
+                        end if;
+
+                    ------------------------------------------------------
+                    -- S_GAME_OVER：遊戲已結束，凍結不動，直到 i_rst
+                    ------------------------------------------------------
+                    when S_GAME_OVER =>
+                        null;
+
+                end case;
+
             end if;
         end if;
     end process;
+
 
     ------------------------------------------------------------------
     -- Process 9：分數輸出
