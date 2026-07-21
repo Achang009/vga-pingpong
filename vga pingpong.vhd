@@ -1,305 +1,423 @@
-library ieee;
-use ieee.std_logic_1164.all;
-use ieee.numeric_std.all;
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
 
-entity PingPong is
-    port (
-        i_clk         : in  std_logic; 
-        i_rst         : in  std_logic; 
-        i_p1_btn_up   : in  std_logic; 
-        i_p1_btn_down : in  std_logic; 
-        i_p2_btn_up   : in  std_logic; 
-        i_p2_btn_down : in  std_logic; 
-        o_hsync       : out std_logic; 
-        o_vsync       : out std_logic; 
-        o_red         : out std_logic_vector(3 downto 0);
-        o_green       : out std_logic_vector(3 downto 0);
-        o_blue        : out std_logic_vector(3 downto 0)
+entity pong_vga is
+    Port (
+        i_clk         : in  STD_LOGIC;                     -- 板子原始時脈 100MHz
+        i_rst         : in  STD_LOGIC;                     -- 重置信號 (高電位有效)
+
+        -- 左邊板子控制 (建議接按鈕，高電位有效)
+        i_left_up     : in  STD_LOGIC;
+        i_left_down   : in  STD_LOGIC;
+
+        -- 右邊板子控制 (建議接按鈕，高電位有效)
+        i_right_up    : in  STD_LOGIC;
+        i_right_down  : in  STD_LOGIC;
+
+        o_hsync       : out STD_LOGIC;                     -- 水平同步信號
+        o_vsync       : out STD_LOGIC;                     -- 垂直同步信號
+        o_red         : out STD_LOGIC_VECTOR(3 downto 0);  -- 紅色輸出
+        o_green       : out STD_LOGIC_VECTOR(3 downto 0);  -- 綠色輸出
+        o_blue        : out STD_LOGIC_VECTOR(3 downto 0);  -- 藍色輸出
+
+        -- 分數輸出 (0~9，可接七段解碼器或另外的顯示模組)
+        o_score_left  : out STD_LOGIC_VECTOR(3 downto 0);
+        o_score_right : out STD_LOGIC_VECTOR(3 downto 0)
     );
-end entity PingPong;
+end pong_vga;
 
-architecture RTL of PingPong is
+architecture Behavioral of pong_vga is
 
-    -- 系統常數
-    constant CLK_FREQ   : integer := 50000000; 
-    constant PIXEL_FREQ : integer := 40000000;
-    
-    constant H_DISPLAY : integer := 800;
-    constant H_TOTAL   : integer := 1056;
-    constant V_DISPLAY : integer := 600;
-    constant V_TOTAL   : integer := 628;
-    constant BALL_SPEED : integer := 4;
+    ------------------------------------------------------------------
+    -- VGA 800x600 @ 60Hz 時序參數
+    ------------------------------------------------------------------
+    constant h_display : integer := 800;
+    constant h_fp      : integer := 40;
+    constant h_sync    : integer := 128;
+    constant h_bp      : integer := 88;
+    constant h_total   : integer := 1056;
 
-    -- 內部訊號宣告
-    signal acc      : integer range 0 to CLK_FREQ + PIXEL_FREQ;
-    signal pixel_en : std_logic;
+    constant v_display : integer := 600;
+    constant v_fp      : integer := 1;
+    constant v_sync    : integer := 4;
+    constant v_bp      : integer := 23;
+    constant v_total   : integer := 628;
 
-    signal h_cnt      : integer range 0 to H_TOTAL - 1;
-    signal v_cnt      : integer range 0 to V_TOTAL - 1;
-    signal pixel_x    : integer range 0 to H_TOTAL - 1;
-    signal pixel_y    : integer range 0 to V_TOTAL - 1;
-    signal vsync_tick : std_logic;
+    constant clk_freq   : integer := 100_000_000;
+    constant pixel_freq : integer := 39_791_680;
+    constant acc_width  : integer := 32;
 
-    type t_game_state is (S_SERVE, S_PLAY);
-    signal game_state : t_game_state;
-    
-    type t_ball_dir is (UP_LEFT, DOWN_LEFT, UP_RIGHT, DOWN_RIGHT);
-    signal ball_dir : t_ball_dir;
-    signal random_cnt : integer range 0 to 3;
+    signal acc      : unsigned(acc_width-1 downto 0) := (others => '0');
+    signal pixel_en : STD_LOGIC := '0';
+    signal h_count  : integer range 0 to h_total-1 := 0;
+    signal v_count  : integer range 0 to v_total-1 := 0;
 
-    signal ball_x         : integer range -50 to 850 := 30;
-    signal ball_y         : integer range -50 to 650 := 300;
-    signal paddle_left_y  : integer range 0 to 600 := 270;
-    signal paddle_right_y : integer range 0 to 600 := 270;
+    ------------------------------------------------------------------
+    -- 遊戲參數：板子 (paddle)
+    ------------------------------------------------------------------
+    constant paddle_width  : integer := 15;
+    constant paddle_height : integer := 100;
+    constant paddle_speed  : integer := 5;   -- 每個畫面刷新移動的像素數
+    constant paddle_margin : integer := 30;  -- 板子離左右邊界的距離
 
-    signal is_ball         : std_logic;
-    signal is_paddle_left  : std_logic;
-    signal is_paddle_right : std_logic;
+    constant left_paddle_x  : integer := paddle_margin;
+    constant right_paddle_x : integer := h_display - paddle_margin - paddle_width;
+
+    signal paddle_left_y  : integer range 0 to v_display-paddle_height
+                             := (v_display-paddle_height)/2;
+    signal paddle_right_y : integer range 0 to v_display-paddle_height
+                             := (v_display-paddle_height)/2;
+
+    ------------------------------------------------------------------
+    -- 遊戲參數：球 (ball)
+    ------------------------------------------------------------------
+    constant ball_size  : integer := 15;
+    constant ball_speed : integer := 4;
+    signal ball_x  : integer range 0 to h_display := h_display/2 - ball_size/2;
+    signal ball_y  : integer range 0 to v_display := v_display/2 - ball_size/2;
+    signal ball_dx : integer := ball_speed;   -- 水平速度 (可正可負)
+    signal ball_dy : integer := ball_speed;   -- 垂直速度 (可正可負)
+
+    ------------------------------------------------------------------
+    -- 分數
+    ------------------------------------------------------------------
+    signal score_left  : integer range 0 to 9 := 0;
+    signal score_right : integer range 0 to 9 := 0;
+
+    signal game_over   : STD_LOGIC := '0';
+    ------------------------------------------------------------------
+    -- 每個畫面 (frame) 結束時產生一次脈波，遊戲邏輯以此更新
+    ------------------------------------------------------------------
+    signal frame_tick : STD_LOGIC := '0';
 
 begin
 
-    -- ==========================================
-    -- 1. 除頻器 (Phase Accumulator)
-    -- ==========================================
-    p_acc : process(i_clk, i_rst)
+    ------------------------------------------------------------------
+    -- Process 0：除頻器 (產生 pixel_en 脈波)
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
     begin
-        if i_rst = '1' then 
-            acc <= 0;
-        elsif rising_edge(i_clk) then
-            if acc + PIXEL_FREQ >= CLK_FREQ then 
-                acc <= acc + PIXEL_FREQ - CLK_FREQ;
-            else 
-                acc <= acc + PIXEL_FREQ; 
-            end if;
-        end if;
-    end process p_acc;
-
-    p_pixel_en : process(i_clk, i_rst)
-    begin
-        if i_rst = '1' then 
+        if i_rst = '1' then
+            acc      <= (others => '0');
             pixel_en <= '0';
         elsif rising_edge(i_clk) then
-            if acc + PIXEL_FREQ >= CLK_FREQ then 
+            if acc + pixel_freq >= clk_freq then
+                acc      <= acc + pixel_freq - clk_freq;
                 pixel_en <= '1';
-            else 
-                pixel_en <= '0'; 
+            else
+                acc      <= acc + pixel_freq;
+                pixel_en <= '0';
             end if;
         end if;
-    end process p_pixel_en;
+    end process;
 
-    -- ==========================================
-    -- 2. VGA 控制器 (巢狀寫法解決模擬器卡死)
-    -- ==========================================
-    p_h_cnt : process(i_clk, i_rst)
-    begin
-        if i_rst = '1' then 
-            h_cnt <= 0;
-        elsif rising_edge(i_clk) then
-            if pixel_en = '1' then
-                if h_cnt = H_TOTAL - 1 then 
-                    h_cnt <= 0; 
-                else 
-                    h_cnt <= h_cnt + 1; 
-                end if;
-            end if;
-        end if;
-    end process p_h_cnt;
-
-    p_v_cnt : process(i_clk, i_rst)
-    begin
-        if i_rst = '1' then 
-            v_cnt <= 0;
-        elsif rising_edge(i_clk) then
-            if pixel_en = '1' then
-                if h_cnt = H_TOTAL - 1 then
-                    if v_cnt = V_TOTAL - 1 then 
-                        v_cnt <= 0; 
-                    else 
-                        v_cnt <= v_cnt + 1; 
-                    end if;
-                end if;
-            end if;
-        end if;
-    end process p_v_cnt;
-
-    o_hsync <= '1' when (h_cnt >= 840 and h_cnt < 968) else '0';
-    o_vsync <= '1' when (v_cnt >= 601 and v_cnt < 605) else '0';
-    pixel_x <= h_cnt when (h_cnt < H_DISPLAY) else 0;
-    pixel_y <= v_cnt when (v_cnt < V_DISPLAY) else 0;
-    vsync_tick <= '1' when (v_cnt = V_DISPLAY and h_cnt = 0) else '0';
-
-    -- ==========================================
-    -- 3. 隨機發球方向產生器
-    -- ==========================================
-    p_random_cnt : process(i_clk, i_rst)
-    begin
-        if i_rst = '1' then 
-            random_cnt <= 0;
-        elsif rising_edge(i_clk) then
-            if random_cnt = 3 then 
-                random_cnt <= 0; 
-            else 
-                random_cnt <= random_cnt + 1; 
-            end if;
-        end if;
-    end process p_random_cnt;
-
-    -- ==========================================
-    -- 4. 遊戲狀態機
-    -- ==========================================
-    p_game_state : process(i_clk, i_rst)
-    begin
-        if i_rst = '1' then 
-            game_state <= S_SERVE;
-        elsif rising_edge(i_clk) then
-            if pixel_en = '1' then
-                case game_state is
-                    when S_SERVE =>
-                        if i_p1_btn_up = '1' or i_p1_btn_down = '1' or 
-                           i_p2_btn_up = '1' or i_p2_btn_down = '1' then
-                            game_state <= S_PLAY;
-                        end if;
-                    when S_PLAY =>
-                        if ball_x <= 0 or (ball_x + 8) >= 800 then 
-                            game_state <= S_SERVE; 
-                        end if;
-                end case;
-            end if;
-        end if;
-    end process p_game_state;
-
-    -- ==========================================
-    -- 5. 球的方向狀態機
-    -- ==========================================
-    p_ball_dir : process(i_clk, i_rst)
+    ------------------------------------------------------------------
+    -- Process 1：水平計數器 h_count
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
     begin
         if i_rst = '1' then
-            ball_dir <= DOWN_RIGHT; 
+            h_count <= 0;
         elsif rising_edge(i_clk) then
             if pixel_en = '1' then
-                if game_state = S_SERVE then
-                    case random_cnt is
-                        when 0 => ball_dir <= UP_LEFT;
-                        when 1 => ball_dir <= DOWN_LEFT;
-                        when 2 => ball_dir <= UP_RIGHT;
-                        when 3 => ball_dir <= DOWN_RIGHT;
-                    end case;
-                elsif game_state = S_PLAY and vsync_tick = '1' then
-                    case ball_dir is
-                        when UP_LEFT =>
-                            if ball_y <= 0 then ball_dir <= DOWN_LEFT;
-                            elsif ball_x <= 20 and (ball_y + 8 >= paddle_left_y) and (ball_y <= paddle_left_y + 60) then ball_dir <= UP_RIGHT;
-                            end if;
-                        when DOWN_LEFT =>
-                            if (ball_y + 8) >= 600 then ball_dir <= UP_LEFT;
-                            elsif ball_x <= 20 and (ball_y + 8 >= paddle_left_y) and (ball_y <= paddle_left_y + 60) then ball_dir <= DOWN_RIGHT;
-                            end if;
-                        when UP_RIGHT =>
-                            if ball_y <= 0 then ball_dir <= DOWN_RIGHT;
-                            elsif (ball_x + 8) >= 770 and (ball_y + 8 >= paddle_right_y) and (ball_y <= paddle_right_y + 60) then ball_dir <= UP_LEFT;
-                            end if;
-                        when DOWN_RIGHT =>
-                            if (ball_y + 8) >= 600 then ball_dir <= UP_RIGHT;
-                            elsif (ball_x + 8) >= 770 and (ball_y + 8 >= paddle_right_y) and (ball_y <= paddle_right_y + 60) then ball_dir <= DOWN_LEFT;
-                            end if;
-                    end case;
+                if h_count = h_total - 1 then
+                    h_count <= 0;
+                else
+                    h_count <= h_count + 1;
                 end if;
             end if;
         end if;
-    end process p_ball_dir;
+    end process;
 
-    -- ==========================================
-    -- 6. 物件座標更新
-    -- ==========================================
-    p_ball_x : process(i_clk, i_rst)
+    ------------------------------------------------------------------
+    -- Process 2：垂直計數器 v_count
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
     begin
         if i_rst = '1' then
-            ball_x <= 30; 
+            v_count <= 0;
         elsif rising_edge(i_clk) then
             if pixel_en = '1' then
-                if game_state = S_SERVE then
-                    ball_x <= 30; 
-                elsif game_state = S_PLAY and vsync_tick = '1' then
-                    if ball_dir = UP_LEFT or ball_dir = DOWN_LEFT then
-                        ball_x <= ball_x - BALL_SPEED;
+                if h_count = h_total - 1 then
+                    if v_count = v_total - 1 then
+                        v_count <= 0;
                     else
-                        ball_x <= ball_x + BALL_SPEED;
+                        v_count <= v_count + 1;
                     end if;
                 end if;
             end if;
         end if;
-    end process p_ball_x;
+    end process;
 
-    p_ball_y : process(i_clk, i_rst)
+    ------------------------------------------------------------------
+    -- Process 3：水平同步信號 o_hsync 正極性
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
     begin
         if i_rst = '1' then
-            ball_y <= 300; 
+            o_hsync <= '0';
         elsif rising_edge(i_clk) then
             if pixel_en = '1' then
-                if game_state = S_SERVE then
-                    ball_y <= 300; 
-                elsif game_state = S_PLAY and vsync_tick = '1' then
-                    if ball_dir = UP_LEFT or ball_dir = UP_RIGHT then
-                        ball_y <= ball_y - BALL_SPEED;
+                if (h_count >= h_display + h_fp) and
+                   (h_count <  h_display + h_fp + h_sync) then
+                    o_hsync <= '1';
+                else
+                    o_hsync <= '0';
+                end if;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 4：垂直同步信號 o_vsync 正極性
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            o_vsync <= '0';
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if (v_count >= v_display + v_fp) and
+                   (v_count <  v_display + v_fp + v_sync) then
+                    o_vsync <= '1';
+                else
+                    o_vsync <= '0';
+                end if;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 5：frame_tick - 每個畫面最後一個像素產生一次脈波
+    -- 遊戲邏輯 (板子移動、球的運動) 都在這個脈波觸發時更新一次，
+    -- 也就是每秒更新約 60 次
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            frame_tick <= '0';
+        elsif rising_edge(i_clk) then
+            if (pixel_en = '1') and (h_count = h_total-1) and (v_count = v_total-1) then
+                frame_tick <= '1';
+            else
+                frame_tick <= '0';
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 6：左邊板子移動
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            paddle_left_y <= (v_display-paddle_height)/2;
+        elsif rising_edge(i_clk) then
+            if (frame_tick = '1') and (game_over = '0') then
+                if i_left_up = '1' then
+                    if paddle_left_y >= paddle_speed then
+                        paddle_left_y <= paddle_left_y - paddle_speed;
                     else
-                        ball_y <= ball_y + BALL_SPEED;
+                        paddle_left_y <= 0;
+                    end if;
+                elsif i_left_down = '1' then
+                    if paddle_left_y <= v_display-paddle_height-paddle_speed then
+                        paddle_left_y <= paddle_left_y + paddle_speed;
+                    else
+                        paddle_left_y <= v_display-paddle_height;
                     end if;
                 end if;
             end if;
         end if;
-    end process p_ball_y;
+    end process;
 
-    p_paddle_left_y : process(i_clk, i_rst)
+    ------------------------------------------------------------------
+    -- Process 7：右邊板子移動
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
     begin
         if i_rst = '1' then
-            paddle_left_y <= 270; 
+            paddle_right_y <= (v_display-paddle_height)/2;
         elsif rising_edge(i_clk) then
-            if pixel_en = '1' then
-                if vsync_tick = '1' then 
-                    if i_p1_btn_up = '1' and paddle_left_y > 10 then
-                        paddle_left_y <= paddle_left_y - 6;
-                    elsif i_p1_btn_down = '1' and paddle_left_y < 530 then
-                        paddle_left_y <= paddle_left_y + 6;
+            if (frame_tick = '1') and (game_over = '0') then
+                if i_right_up = '1' then
+                    if paddle_right_y >= paddle_speed then
+                        paddle_right_y <= paddle_right_y - paddle_speed;
+                    else
+                        paddle_right_y <= 0;
+                    end if;
+                elsif i_right_down = '1' then
+                    if paddle_right_y <= v_display-paddle_height-paddle_speed then
+                        paddle_right_y <= paddle_right_y + paddle_speed;
+                    else
+                        paddle_right_y <= v_display-paddle_height;
                     end if;
                 end if;
             end if;
         end if;
-    end process p_paddle_left_y;
+    end process;
 
-    p_paddle_right_y : process(i_clk, i_rst)
+    ------------------------------------------------------------------
+    -- Process 8：球的運動、碰撞偵測與得分判斷
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+        variable next_x : integer;
+        variable next_y : integer;
     begin
         if i_rst = '1' then
-            paddle_right_y <= 270; 
+            ball_x      <= h_display/2 - ball_size/2;
+            ball_y      <= v_display/2 - ball_size/2;
+            ball_dx     <= ball_speed;
+            ball_dy     <= ball_speed;
+            score_left  <= 0;
+            score_right <= 0;
+            game_over   <= '0';
         elsif rising_edge(i_clk) then
-            if pixel_en = '1' then
-                if vsync_tick = '1' then 
-                    if i_p2_btn_up = '1' and paddle_right_y > 10 then
-                        paddle_right_y <= paddle_right_y - 6;
-                    elsif i_p2_btn_down = '1' and paddle_right_y < 530 then
-                        paddle_right_y <= paddle_right_y + 6;
+            -- 遊戲已結束時，球與分數都凍結，直到 i_rst 重新開始
+            if (frame_tick = '1') and (game_over = '0') then
+                next_x := ball_x + ball_dx;
+                next_y := ball_y + ball_dy;
+
+                ----------------------------------------------------------
+                -- 上下邊界反彈
+                ----------------------------------------------------------
+                if next_y <= 0 then
+                    ball_y  <= 0;
+                    ball_dy <= -ball_dy;
+                elsif next_y >= v_display - ball_size then
+                    ball_y  <= v_display - ball_size;
+                    ball_dy <= -ball_dy;
+                else
+                    ball_y <= next_y;
+                end if;
+
+                ----------------------------------------------------------
+                -- 左右邊界：撞板反彈 或 對方得分
+                ----------------------------------------------------------
+                if (ball_dx < 0) and (next_x <= left_paddle_x + paddle_width) and
+                   (next_x >= left_paddle_x) and
+                   (ball_y + ball_size >= paddle_left_y) and
+                   (ball_y <= paddle_left_y + paddle_height) then
+                    -- 撞到左邊板子，反彈往右
+                    ball_x  <= left_paddle_x + paddle_width;
+                    ball_dx <= ball_speed;
+
+                elsif next_x <= 0 then
+                    -- 沒接到，右邊玩家得分，球重置到中央
+                    if score_right < 9 then
+                        score_right <= score_right + 1;
+                        if score_right + 1 = 9 then
+                            -- 右邊拿到第9分，遊戲結束
+                            game_over <= '1';
+                        end if;
                     end if;
+                    ball_x  <= h_display/2 - ball_size/2;
+                    ball_y  <= v_display/2 - ball_size/2;
+                    ball_dx <= ball_speed;
+
+                elsif (ball_dx > 0) and (next_x + ball_size >= right_paddle_x) and
+                      (next_x + ball_size <= right_paddle_x + paddle_width) and
+                      (ball_y + ball_size >= paddle_right_y) and
+                      (ball_y <= paddle_right_y + paddle_height) then
+                    -- 撞到右邊板子，反彈往左
+                    ball_x  <= right_paddle_x - ball_size;
+                    ball_dx <= -ball_speed;
+
+                elsif next_x >= h_display - ball_size then
+                    -- 沒接到，左邊玩家得分，球重置到中央
+                    if score_left < 9 then
+                        score_left <= score_left + 1;
+                        if score_left + 1 = 9 then
+                            -- 左邊拿到第9分，遊戲結束
+                            game_over <= '1';
+                        end if;
+                    end if;
+                    ball_x  <= h_display/2 - ball_size/2;
+                    ball_y  <= v_display/2 - ball_size/2;
+                    ball_dx <= -ball_speed;
+
+                else
+                    ball_x <= next_x;
                 end if;
             end if;
         end if;
-    end process p_paddle_right_y;
+    end process;
 
-    -- ==========================================
-    -- 7. 像素生成器 (組合邏輯)
-    -- ==========================================
-    is_ball <= '1' when (pixel_x >= ball_x and pixel_x < ball_x + 8) and
-                        (pixel_y >= ball_y and pixel_y < ball_y + 8) else '0';
+    ------------------------------------------------------------------
+    -- Process 9：分數輸出
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            o_score_left  <= "0000";
+            o_score_right <= "0000";
+        elsif rising_edge(i_clk) then
+            o_score_left  <= STD_LOGIC_VECTOR(TO_UNSIGNED(score_left,  4));
+            o_score_right <= STD_LOGIC_VECTOR(TO_UNSIGNED(score_right, 4));
+        end if;
+    end process;
 
-    is_paddle_left <= '1' when (pixel_x >= 10 and pixel_x < 20) and
-                               (pixel_y >= paddle_left_y and pixel_y < paddle_left_y + 60) else '0';
+    ------------------------------------------------------------------
+    -- Process 10：畫面顏色輸出 (板子 / 球 / 中線 / 背景)
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            o_red   <= "0000";
+            o_green <= "0000";
+            o_blue  <= "0000";
+        elsif rising_edge(i_clk) then
+            if pixel_en = '1' then
+                if (h_count < h_display) and (v_count < v_display) then
 
-    is_paddle_right <= '1' when (pixel_x >= 770 and pixel_x < 780) and
-                                (pixel_y >= paddle_right_y and pixel_y < paddle_right_y + 60) else '0';
+                    if game_over = '1' then
+                        -- 遊戲結束：整個畫面顯示獲勝方顏色 (需要 i_rst 才能重新開始)
+                        if score_left = 9 then
+                            -- 左邊獲勝：綠色
+                            o_red <= "0000"; o_green <= "1111"; o_blue <= "0000";
+                        else
+                            -- 右邊獲勝：紅色
+                            o_red <= "1111"; o_green <= "0000"; o_blue <= "0000";
+                        end if;
 
-    o_red <= "1111" when (is_ball = '1' and pixel_x < H_DISPLAY and pixel_y < V_DISPLAY) else "0000";
-    
-    o_green <= "1111" when ((is_paddle_left = '1' or is_paddle_right = '1') and 
-                            pixel_x < H_DISPLAY and pixel_y < V_DISPLAY) else "0000";
-                            
-    o_blue <= "0000";
+                    elsif (h_count >= left_paddle_x) and
+                       (h_count <  left_paddle_x + paddle_width) and
+                       (v_count >= paddle_left_y) and
+                       (v_count <  paddle_left_y + paddle_height) then
+                        -- 左邊板子：白色
+                        o_red <= "1111"; o_green <= "1111"; o_blue <= "1111";
 
-end architecture RTL;
+                    elsif (h_count >= right_paddle_x) and
+                          (h_count <  right_paddle_x + paddle_width) and
+                          (v_count >= paddle_right_y) and
+                          (v_count <  paddle_right_y + paddle_height) then
+                        -- 右邊板子：白色
+                        o_red <= "1111"; o_green <= "1111"; o_blue <= "1111";
+
+                    elsif (h_count >= ball_x) and (h_count < ball_x + ball_size) and
+                          (v_count >= ball_y) and (v_count < ball_y + ball_size) then
+                        -- 球：黃色
+                        o_red <= "1111"; o_green <= "1111"; o_blue <= "0000";
+
+                    elsif (h_count >= h_display/2 - 2) and (h_count < h_display/2 + 2) and
+                          ((v_count mod 40) < 20) then
+                        -- 中線：虛線灰色
+                        o_red <= "0111"; o_green <= "0111"; o_blue <= "0111";
+
+                    else
+                        -- 背景：深藍色
+                        o_red <= "0000"; o_green <= "0000"; o_blue <= "0010";
+                    end if;
+
+                else
+                    -- 消隱區間：黑色
+                    o_red   <= "0000";
+                    o_green <= "0000";
+                    o_blue  <= "0000";
+                end if;
+            end if;
+        end if;
+    end process;
+
+end Behavioral;
