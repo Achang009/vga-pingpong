@@ -80,23 +80,19 @@ architecture Behavioral of pong_vga is
     signal ball_dx : integer := ball_speed;   -- 水平速度 (可正可負)
     signal ball_dy : integer := ball_speed;   -- 垂直速度 (可正可負)
 
+    signal next_ball_x     : integer;  -- 若本次移動，球下一步的 x 座標
+    signal next_ball_y     : integer;  -- 若本次移動，球下一步的 y 座標
+    signal hit_left_paddle  : STD_LOGIC;  -- 這一步是否會撞到左邊板子
+    signal hit_right_paddle : STD_LOGIC;  -- 這一步是否會撞到右邊板子
+
     ------------------------------------------------------------------
     -- 分數
     ------------------------------------------------------------------
     signal score_left  : integer range 0 to 9 := 0;
     signal score_right : integer range 0 to 9 := 0;
 
-    -- 遊戲是否已結束 ('1' = 已經有一方拿到9分，畫面凍結顯示獲勝方，
-    -- 需要 i_rst 重置才能重新開始一局)
     signal game_over   : STD_LOGIC := '0';
-
-    ------------------------------------------------------------------
-    -- 球的狀態機 (FSM)
-    --   S_PLAY        : 正常比賽中，球依照速度移動、偵測撞板/撞牆
-    --   S_SCORE_LEFT  : 球飛出右邊界，左邊玩家得分 (一個 frame_tick 的過渡狀態)
-    --   S_SCORE_RIGHT : 球飛出左邊界，右邊玩家得分 (一個 frame_tick 的過渡狀態)
-    --   S_GAME_OVER   : 已經有一方拿到9分，凍結，需要 i_rst 才能離開
-    ------------------------------------------------------------------
+    
     type ball_state_t is (S_PLAY, S_SCORE_LEFT, S_SCORE_RIGHT, S_GAME_OVER);
     signal ball_state : ball_state_t := S_PLAY;
 
@@ -205,7 +201,7 @@ begin
     ------------------------------------------------------------------
     -- Process 5：frame_tick - 每個畫面最後一個像素產生一次脈波
     -- 遊戲邏輯 (板子移動、球的運動) 都在這個脈波觸發時更新一次，
-    -- 也就是每秒更新約 60 次，速度感覺自然。
+    -- 也就是每秒更新約 60 次
     ------------------------------------------------------------------
     process(i_clk, i_rst)
     begin
@@ -273,127 +269,230 @@ begin
     end process;
 
     ------------------------------------------------------------------
-    -- Process 8：球的運動、碰撞偵測與得分判斷
+    -- Process 8- 算出球的下一步位置與撞板旗標
+    ------------------------------------------------------------------
+    process(ball_x, ball_y, ball_dx, ball_dy)
+    begin
+        next_ball_x <= ball_x + ball_dx;
+        next_ball_y <= ball_y + ball_dy;
+
+        if (ball_dx < 0) and (ball_x + ball_dx <= left_paddle_x + paddle_width) and
+           (ball_x + ball_dx >= left_paddle_x) and
+           (ball_y + ball_size >= paddle_left_y) and
+           (ball_y <= paddle_left_y + paddle_height) then
+            hit_left_paddle <= '1';
+        else
+            hit_left_paddle <= '0';
+        end if;
+
+        if (ball_dx > 0) and (ball_x + ball_dx + ball_size >= right_paddle_x) and
+           (ball_x + ball_dx + ball_size <= right_paddle_x + paddle_width) and
+           (ball_y + ball_size >= paddle_right_y) and
+           (ball_y <= paddle_right_y + paddle_height) then
+            hit_right_paddle <= '1';
+        else
+            hit_right_paddle <= '0';
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 9：FSM 狀態暫存器 - 只負責決定下一個狀態，不碰任何變數
     ------------------------------------------------------------------
     process(i_clk, i_rst)
-        variable next_x : integer;
-        variable next_y : integer;
     begin
         if i_rst = '1' then
-            ball_x      <= h_display/2 - ball_size/2;
-            ball_y      <= v_display/2 - ball_size/2;
-            ball_dx     <= ball_speed;
-            ball_dy     <= ball_speed;
-            score_left  <= 0;
-            score_right <= 0;
-            game_over   <= '0';
-            ball_state  <= S_PLAY;
+            ball_state <= S_PLAY;
         elsif rising_edge(i_clk) then
             if frame_tick = '1' then
-
                 case ball_state is
 
-                    ------------------------------------------------------
-                    -- S_PLAY：正常比賽，球依速度移動、偵測撞板/撞牆
-                    ------------------------------------------------------
                     when S_PLAY =>
-                        next_x := ball_x + ball_dx;
-                        next_y := ball_y + ball_dy;
-
-                        -- 上下邊界反彈
-                        if next_y <= 0 then
-                            ball_y  <= 0;
-                            ball_dy <= -ball_dy;
-                        elsif next_y >= v_display - ball_size then
-                            ball_y  <= v_display - ball_size;
-                            ball_dy <= -ball_dy;
+                        if hit_left_paddle = '1' then
+                            ball_state <= S_PLAY;              -- 撞到左板，繼續比賽
+                        elsif next_ball_x <= 0 then
+                            ball_state <= S_SCORE_RIGHT;        -- 沒接到，右邊得分
+                        elsif hit_right_paddle = '1' then
+                            ball_state <= S_PLAY;               -- 撞到右板，繼續比賽
+                        elsif next_ball_x >= h_display - ball_size then
+                            ball_state <= S_SCORE_LEFT;         -- 沒接到，左邊得分
                         else
-                            ball_y <= next_y;
+                            ball_state <= S_PLAY;               -- 正常移動中
                         end if;
 
-                        -- 左右邊界：撞板反彈、或進入得分狀態
-                        if (ball_dx < 0) and (next_x <= left_paddle_x + paddle_width) and
-                           (next_x >= left_paddle_x) and
-                           (ball_y + ball_size >= paddle_left_y) and
-                           (ball_y <= paddle_left_y + paddle_height) then
-                            -- 撞到左邊板子，反彈往右，留在 S_PLAY
-                            ball_x  <= left_paddle_x + paddle_width;
-                            ball_dx <= ball_speed;
-
-                        elsif next_x <= 0 then
-                            -- 沒接到，右邊玩家得分 -> 進入 S_SCORE_RIGHT
-                            ball_state <= S_SCORE_RIGHT;
-
-                        elsif (ball_dx > 0) and (next_x + ball_size >= right_paddle_x) and
-                              (next_x + ball_size <= right_paddle_x + paddle_width) and
-                              (ball_y + ball_size >= paddle_right_y) and
-                              (ball_y <= paddle_right_y + paddle_height) then
-                            -- 撞到右邊板子，反彈往左，留在 S_PLAY
-                            ball_x  <= right_paddle_x - ball_size;
-                            ball_dx <= -ball_speed;
-
-                        elsif next_x >= h_display - ball_size then
-                            -- 沒接到，左邊玩家得分 -> 進入 S_SCORE_LEFT
-                            ball_state <= S_SCORE_LEFT;
-
-                        else
-                            ball_x <= next_x;
-                        end if;
-
-                    ------------------------------------------------------
-                    -- S_SCORE_LEFT：左邊玩家得分，球飛出右邊界
-                    ------------------------------------------------------
                     when S_SCORE_LEFT =>
-                        if score_left < 9 then
-                            score_left <= score_left + 1;
-                        end if;
-
                         if score_left + 1 >= 9 then
-                            -- 左邊拿到第9分，遊戲結束
-                            game_over  <= '1';
                             ball_state <= S_GAME_OVER;
                         else
-                            -- 球重置到中央，交給右邊發球，回到 S_PLAY
-                            ball_x     <= h_display/2 - ball_size/2;
-                            ball_y     <= v_display/2 - ball_size/2;
-                            ball_dx    <= -ball_speed;
                             ball_state <= S_PLAY;
                         end if;
 
-                    ------------------------------------------------------
-                    -- S_SCORE_RIGHT：右邊玩家得分，球飛出左邊界
-                    ------------------------------------------------------
                     when S_SCORE_RIGHT =>
-                        if score_right < 9 then
-                            score_right <= score_right + 1;
-                        end if;
-
                         if score_right + 1 >= 9 then
-                            -- 右邊拿到第9分，遊戲結束
-                            game_over  <= '1';
                             ball_state <= S_GAME_OVER;
                         else
-                            -- 球重置到中央，交給左邊發球，回到 S_PLAY
-                            ball_x     <= h_display/2 - ball_size/2;
-                            ball_y     <= v_display/2 - ball_size/2;
-                            ball_dx    <= ball_speed;
                             ball_state <= S_PLAY;
                         end if;
 
-                    ------------------------------------------------------
-                    -- S_GAME_OVER：遊戲已結束，凍結不動，直到 i_rst
-                    ------------------------------------------------------
                     when S_GAME_OVER =>
-                        null;
+                        ball_state <= S_GAME_OVER;              -- 凍結，直到 i_rst
 
                 end case;
-
             end if;
         end if;
     end process;
 
     ------------------------------------------------------------------
-    -- Process 9：分數輸出
+    -- Process 10：ball_x - 只負責更新球的水平位置
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            ball_x <= h_display/2 - ball_size/2;
+        elsif rising_edge(i_clk) then
+            if frame_tick = '1' then
+                case ball_state is
+                    when S_PLAY =>
+                        if hit_left_paddle = '1' then
+                            ball_x <= left_paddle_x + paddle_width;
+                        elsif hit_right_paddle = '1' then
+                            ball_x <= right_paddle_x - ball_size;
+                        elsif (next_ball_x > 0) and (next_ball_x < h_display - ball_size) then
+                            ball_x <= next_ball_x;
+                        end if;
+                        -- 若飛出邊界(即將得分)，這裡先不動，下個 frame_tick
+                        -- 進入 S_SCORE_LEFT/RIGHT 後會被重置到中央
+                    when S_SCORE_LEFT | S_SCORE_RIGHT =>
+                        ball_x <= h_display/2 - ball_size/2;
+                    when S_GAME_OVER =>
+                        null;  -- 保持不動
+                end case;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 11：ball_y - 只負責更新球的垂直位置
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            ball_y <= v_display/2 - ball_size/2;
+        elsif rising_edge(i_clk) then
+            if frame_tick = '1' then
+                case ball_state is
+                    when S_PLAY =>
+                        if next_ball_y <= 0 then
+                            ball_y <= 0;
+                        elsif next_ball_y >= v_display - ball_size then
+                            ball_y <= v_display - ball_size;
+                        else
+                            ball_y <= next_ball_y;
+                        end if;
+                    when S_SCORE_LEFT | S_SCORE_RIGHT =>
+                        ball_y <= v_display/2 - ball_size/2;
+                    when S_GAME_OVER =>
+                        null;  -- 保持不動
+                end case;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 12：ball_dx - 只負責更新球的水平速度(方向)
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            ball_dx <= ball_speed;
+        elsif rising_edge(i_clk) then
+            if frame_tick = '1' then
+                case ball_state is
+                    when S_PLAY =>
+                        if hit_left_paddle = '1' then
+                            ball_dx <= ball_speed;   -- 撞左板，反彈往右
+                        elsif hit_right_paddle = '1' then
+                            ball_dx <= -ball_speed;  -- 撞右板，反彈往左
+                        end if;
+                        -- 其餘情況(正常移動中)維持原方向
+                    when S_SCORE_LEFT =>
+                        ball_dx <= -ball_speed;  -- 重新發球方向
+                    when S_SCORE_RIGHT =>
+                        ball_dx <= ball_speed;   -- 重新發球方向
+                    when S_GAME_OVER =>
+                        null;
+                end case;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 13：ball_dy - 只負責更新球的垂直速度(方向)
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            ball_dy <= ball_speed;
+        elsif rising_edge(i_clk) then
+            if frame_tick = '1' then
+                case ball_state is
+                    when S_PLAY =>
+                        if (next_ball_y <= 0) or (next_ball_y >= v_display - ball_size) then
+                            ball_dy <= -ball_dy;   -- 碰到上下邊界，反彈
+                        end if;
+                    when others =>
+                        null;  -- 得分/結束狀態時垂直方向不變
+                end case;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 14：score_left - 只負責左邊玩家的分數
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            score_left <= 0;
+        elsif rising_edge(i_clk) then
+            if (frame_tick = '1') and (ball_state = S_SCORE_LEFT) and (score_left < 9) then
+                score_left <= score_left + 1;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 15：score_right - 只負責右邊玩家的分數
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            score_right <= 0;
+        elsif rising_edge(i_clk) then
+            if (frame_tick = '1') and (ball_state = S_SCORE_RIGHT) and (score_right < 9) then
+                score_right <= score_right + 1;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 16：game_over - 只負責記錄遊戲是否已經結束
+    ------------------------------------------------------------------
+    process(i_clk, i_rst)
+    begin
+        if i_rst = '1' then
+            game_over <= '0';
+        elsif rising_edge(i_clk) then
+            if frame_tick = '1' then
+                if (ball_state = S_SCORE_LEFT  and score_left  + 1 >= 9) or
+                   (ball_state = S_SCORE_RIGHT and score_right + 1 >= 9) then
+                    game_over <= '1';
+                end if;
+            end if;
+        end if;
+    end process;
+
+    ------------------------------------------------------------------
+    -- Process 17：分數輸出 
     ------------------------------------------------------------------
     process(i_clk, i_rst)
     begin
@@ -407,7 +506,7 @@ begin
     end process;
 
     ------------------------------------------------------------------
-    -- Process 10：畫面顏色輸出 (板子 / 球 / 中線 / 背景)
+    -- Process 18：畫面顏色輸出 (板子 / 球 / 中線 / 背景)
     ------------------------------------------------------------------
     process(i_clk, i_rst)
     begin
