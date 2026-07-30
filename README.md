@@ -1,7 +1,6 @@
 # vga-pingpong
 # 波形圖
-<img width="972" height="542" alt="image" src="https://github.com/user-attachments/assets/aafdfa55-3ed3-476b-a454-157e8ff384b5" />
-
+<img width="990" height="597" alt="image" src="https://github.com/user-attachments/assets/0cd21b4b-a8bf-486e-a519-c368b92fb5e5" />
 
 
 
