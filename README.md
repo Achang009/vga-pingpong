@@ -5,24 +5,27 @@
 
 
 # breakdown
-<img width="688" height="228" alt="image" src="https://github.com/user-attachments/assets/5a07be62-70e6-4f90-aa82-124003fac205" />
-
+<img width="1194" height="275" alt="image" src="https://github.com/user-attachments/assets/524385cf-c7d2-4f56-9f54-861d357e1bb3" />
 
 
 # MSC
-<img width="1713" height="809" alt="image" src="https://github.com/user-attachments/assets/243f8bda-23be-4c17-b777-b873540fd59a" />
+<img width="1367" height="386" alt="image" src="https://github.com/user-attachments/assets/dcd9dfe9-3404-4443-b6e8-d1cfc0054255" />
+
 
 
 # FSM
-<img width="829" height="920" alt="image" src="https://github.com/user-attachments/assets/956c1b89-71e1-4590-ab43-714e4efbedc8" />
+<img width="567" height="534" alt="image" src="https://github.com/user-attachments/assets/36830b6b-f55e-4756-815a-b63e80c8c181" />
+
 
 
 # AOV
-<img width="1543" height="930" alt="image" src="https://github.com/user-attachments/assets/64196adf-088a-41b9-9f97-83ea3daa4c7d" />
+<img width="899" height="627" alt="image" src="https://github.com/user-attachments/assets/a194d847-e8bc-4ab5-b01f-a2c652a8fd08" />
+
 
 
 # 架構圖
-<img width="788" height="839" alt="image" src="https://github.com/user-attachments/assets/70131ad6-16c4-41b6-89db-81242a6934f8" />
+<img width="1122" height="783" alt="image" src="https://github.com/user-attachments/assets/719f8ee9-f66e-4d79-97a6-4df988fab0df" />
+
 
 # 影片
 
