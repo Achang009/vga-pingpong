@@ -9,9 +9,7 @@
 
 
 # MSC
-<img width="1367" height="386" alt="image" src="https://github.com/user-attachments/assets/dcd9dfe9-3404-4443-b6e8-d1cfc0054255" />
-
-
+<img width="1018" height="285" alt="image" src="https://github.com/user-attachments/assets/bbd4f243-3968-45ad-810f-c1551fbb47e3" />
 
 # FSM
 <img width="567" height="534" alt="image" src="https://github.com/user-attachments/assets/36830b6b-f55e-4756-815a-b63e80c8c181" />
